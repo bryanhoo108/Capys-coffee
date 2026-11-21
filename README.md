@@ -20,7 +20,18 @@ takes, makes and charges orders. Every order is takeaway (no tables).
 | Signature | RM 10 | Blue Sea Goldfish Soda 深海捞金 |
 
 Every drink offers ice (normal / less / none) and sweetness (normal / less / none),
-free of charge. Prices, names and sold-out status can be changed in **Staff → Menu**.
+free of charge.
+
+### Changing the menu (Staff → Menu)
+
+- **New drink**: name (English and 中文), price, category, an optional menu number, a cup
+  illustration and garnish, and which options customers get (e.g. untick *Ice level* for
+  hot drinks). It shows on customers' phones as soon as you save.
+- **New category**: adds a section such as *Hot drinks* or *Snacks*. Rename it with the
+  pencil icon. Remove it with the bin icon once it has no drinks.
+- **Sold out**: the *Available* switch. Use this when you run out for the day.
+- **Edit / Remove**: tap a drink to change anything about it, or remove it from the menu.
+  Past orders and reports keep removed drinks.
 The server always works out the price itself. It never trusts the price a phone sends.
 
 ## Run it

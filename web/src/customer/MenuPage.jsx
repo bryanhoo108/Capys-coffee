@@ -152,7 +152,15 @@ export default function MenuPage() {
       if (visible[0]) setActiveCat(visible[0].target.dataset.cat);
     }, { rootMargin: '-140px 0px -55% 0px' });
     Object.values(sectionRefs.current).forEach((el) => el && obs.observe(el));
-    return () => obs.disconnect();
+    // The last section can be too short to reach the top of the screen: mark it when the page bottoms out.
+    const onScroll = () => {
+      if (window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 4) {
+        const last = sections[sections.length - 1];
+        if (last) setActiveCat(last.id);
+      }
+    };
+    window.addEventListener('scroll', onScroll, { passive: true });
+    return () => { obs.disconnect(); window.removeEventListener('scroll', onScroll); };
   }, [sections]);
 
   useEffect(() => {

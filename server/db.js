@@ -126,8 +126,14 @@ export function openDb(file = process.env.DB_FILE || 'data/capys.db') {
     );
     CREATE INDEX IF NOT EXISTS idx_order_items_order ON order_items(order_id);
   `);
+  migrate(db);
   seed(db);
   return db;
+}
+
+function migrate(db) {
+  const catCols = db.prepare('PRAGMA table_info(categories)').all().map((c) => c.name);
+  if (!catCols.includes('active')) db.exec('ALTER TABLE categories ADD COLUMN active INTEGER NOT NULL DEFAULT 1');
 }
 
 function seed(db) {
@@ -160,6 +166,33 @@ function seed(db) {
 }
 
 /* ------------------------------------------------------------------ */
+
+const HEX = /^#[0-9a-fA-F]{6}$/;
+export const GARNISHES = ['orange', 'grapefruit', 'lime', 'strawberry', 'coconut', 'wheat', 'oat', 'chocolate', 'beans', 'foam', 'goldfish'];
+
+/** Validate the illustrated-cup settings sent from the menu editor. */
+function cleanArt(a) {
+  if (!a || typeof a !== 'object') throw new HttpError(400, 'Choose a cup look');
+  const layers = (Array.isArray(a.layers) ? a.layers : [])
+    .slice(0, 4)
+    .filter((l) => l && HEX.test(l.c) && Number(l.h) > 0)
+    .map((l) => ({ c: l.c, h: Math.min(0.9, Math.round(Number(l.h) * 100) / 100) }));
+  if (!layers.length) throw new HttpError(400, 'Choose a cup look');
+  const out = { tint: HEX.test(a.tint) ? a.tint : '#EFE6DC', layers };
+  if (GARNISHES.includes(a.garnish)) out.garnish = a.garnish;
+  for (const k of ['bubbles', 'noIce', 'drizzle']) if (a[k]) out[k] = true;
+  return out;
+}
+
+function cleanOptions(list) {
+  if (!Array.isArray(list)) throw new HttpError(400, 'Invalid options');
+  const ids = OPTION_GROUPS.map((g) => g.id);
+  return ids.filter((id) => list.includes(id));
+}
+
+function slugify(name) {
+  return String(name).toLowerCase().normalize('NFKD').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'item';
+}
 
 export function createStore(db) {
   const tx = (fn) => {
@@ -198,7 +231,7 @@ export function createStore(db) {
   }
 
   function menu() {
-    const categories = db.prepare('SELECT * FROM categories ORDER BY sort, name').all()
+    const categories = db.prepare('SELECT * FROM categories WHERE active = 1 ORDER BY sort, name').all()
       .map((c) => ({ id: c.id, name: c.name, nameZh: c.name_zh, sort: c.sort }));
     const items = db.prepare('SELECT * FROM items WHERE active = 1 ORDER BY sort, name').all().map(rowToItem);
     const optionGroups = OPTION_GROUPS.map((g) => ({
@@ -235,12 +268,83 @@ export function createStore(db) {
       if (key in patch) { sets.push(`${col} = ?`); vals.push(str(patch[key], max)); }
     }
     if ('categoryId' in patch) {
-      if (!db.prepare('SELECT 1 FROM categories WHERE id = ?').get(patch.categoryId)) throw new HttpError(400, 'Unknown category');
+      if (!db.prepare('SELECT 1 FROM categories WHERE id = ? AND active = 1').get(patch.categoryId)) throw new HttpError(400, 'Unknown category');
       sets.push('category_id = ?'); vals.push(patch.categoryId);
     }
+    if ('art' in patch) { sets.push('art = ?'); vals.push(JSON.stringify(cleanArt(patch.art))); }
+    if ('options' in patch) { sets.push('options = ?'); vals.push(JSON.stringify(cleanOptions(patch.options))); }
+    if ('number' in patch) { sets.push('number = ?'); vals.push(cleanNumber(patch.number)); }
     if (!sets.length) return item;
     db.prepare(`UPDATE items SET ${sets.join(', ')} WHERE id = ?`).run(...vals, id);
     return getItem(id);
+  }
+
+  function cleanNumber(v) {
+    if (v === null || v === '' || v === undefined) return null;
+    const n = Number(v);
+    if (!Number.isInteger(n) || n < 1 || n > 999) throw new HttpError(400, 'Menu number must be between 1 and 999');
+    return n;
+  }
+
+  function createItem(input = {}) {
+    const name = String(input.name ?? '').trim().slice(0, 60);
+    if (!name) throw new HttpError(400, 'Name is required');
+    const price = Number(input.price);
+    if (!Number.isInteger(price) || price < 0 || price > 100000) throw new HttpError(400, 'Price must be between RM 0.00 and RM 1,000.00');
+    if (!db.prepare('SELECT 1 FROM categories WHERE id = ? AND active = 1').get(input.categoryId)) throw new HttpError(400, 'Choose a category');
+    const art = cleanArt(input.art);
+    const options = cleanOptions(input.options ?? OPTION_GROUPS.map((g) => g.id));
+    const str = (v, max) => String(v ?? '').trim().slice(0, max);
+    const number = 'number' in input && input.number !== undefined
+      ? cleanNumber(input.number)
+      : (db.prepare('SELECT MAX(number) AS m FROM items WHERE active = 1').get().m || 0) + 1;
+    const base = slugify(name);
+    let id = base;
+    for (let i = 2; db.prepare('SELECT 1 FROM items WHERE id = ?').get(id); i++) id = `${base}-${i}`;
+    const sort = (db.prepare('SELECT MAX(sort) AS m FROM items').get().m ?? -1) + 1;
+    db.prepare(`INSERT INTO items
+      (id, category_id, number, name, name_zh, tagline, tagline_zh, description, description_zh, price, art, options, available, featured, active, sort)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)`).run(
+      id, input.categoryId, number, name, str(input.nameZh, 30), str(input.tagline, 40), str(input.taglineZh, 30),
+      str(input.description, 240), str(input.descriptionZh, 120), price, JSON.stringify(art), JSON.stringify(options),
+      input.available === false ? 0 : 1, input.featured ? 1 : 0, sort,
+    );
+    return getItem(id);
+  }
+
+  /** Removes an item from the menu. Past orders keep their own copy of the name and price. */
+  function deleteItem(id) {
+    const res = db.prepare('UPDATE items SET active = 0, featured = 0 WHERE id = ? AND active = 1').run(id);
+    if (!res.changes) throw new HttpError(404, 'Item not found');
+  }
+
+  function createCategory(input = {}) {
+    const name = String(input.name ?? '').trim().slice(0, 30);
+    if (!name) throw new HttpError(400, 'Category name is required');
+    const base = slugify(name);
+    let id = base;
+    for (let i = 2; db.prepare('SELECT 1 FROM categories WHERE id = ?').get(id); i++) id = `${base}-${i}`;
+    const sort = (db.prepare('SELECT MAX(sort) AS m FROM categories').get().m ?? 0) + 1;
+    db.prepare('INSERT INTO categories (id, name, name_zh, sort, active) VALUES (?, ?, ?, ?, 1)')
+      .run(id, name, String(input.nameZh ?? '').trim().slice(0, 20), sort);
+    return { id, name, nameZh: String(input.nameZh ?? '').trim().slice(0, 20), sort };
+  }
+
+  function updateCategory(id, input = {}) {
+    if (!db.prepare('SELECT 1 FROM categories WHERE id = ? AND active = 1').get(id)) throw new HttpError(404, 'Category not found');
+    if ('name' in input) {
+      const name = String(input.name ?? '').trim().slice(0, 30);
+      if (!name) throw new HttpError(400, 'Category name is required');
+      db.prepare('UPDATE categories SET name = ? WHERE id = ?').run(name, id);
+    }
+    if ('nameZh' in input) db.prepare('UPDATE categories SET name_zh = ? WHERE id = ?').run(String(input.nameZh ?? '').trim().slice(0, 20), id);
+  }
+
+  function deleteCategory(id) {
+    if (!db.prepare('SELECT 1 FROM categories WHERE id = ? AND active = 1').get(id)) throw new HttpError(404, 'Category not found');
+    const n = db.prepare('SELECT COUNT(*) AS n FROM items WHERE category_id = ? AND active = 1').get(id).n;
+    if (n) throw new HttpError(409, `Move or remove its ${n} drink${n === 1 ? '' : 's'} first`);
+    db.prepare('UPDATE categories SET active = 0 WHERE id = ?').run(id);
   }
 
   /* ---------------- orders ---------------- */
@@ -546,7 +650,7 @@ export function createStore(db) {
   }
 
   return {
-    db, getSetting, publicSettings, menu, getItem, updateItem,
+    db, getSetting, publicSettings, menu, getItem, updateItem, createItem, deleteItem, createCategory, updateCategory, deleteCategory,
     createOrder, getOrder, getOrderByToken, publicOrder, setStatus, markPaid, voidPayment, setLineDone,
     boardOrders, displayBoard, searchOrders, report, updateSettings, checkPin, changePin,
   };

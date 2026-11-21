@@ -164,6 +164,56 @@ test('price edits apply to new orders only', async () => {
   assert.equal((await call('PATCH', '/api/staff/items/classic-iced-americano', { price: -5 }, { auth: true })).status, 400);
 });
 
+test('staff can add a category and a drink, customers can order it, and it can be removed', async () => {
+  const art = { tint: '#FDEBD2', layers: [{ c: '#F3ECE2', h: 0.5 }, { c: '#6B4430', h: 0.36 }], garnish: 'beans', evil: '<script>' };
+  assert.equal((await call('POST', '/api/staff/categories', { name: 'Hot drinks' })).status, 401);
+  const cat = await call('POST', '/api/staff/categories', { name: 'Hot drinks', nameZh: '热饮' }, { auth: true });
+  assert.equal(cat.status, 201);
+  assert.equal(cat.data.id, 'hot-drinks');
+  // validation
+  assert.equal((await call('POST', '/api/staff/items', { name: '', price: 900, categoryId: 'hot-drinks', art }, { auth: true })).status, 400);
+  assert.equal((await call('POST', '/api/staff/items', { name: 'X', price: 900, categoryId: 'nope', art }, { auth: true })).status, 400);
+  assert.equal((await call('POST', '/api/staff/items', { name: 'X', price: 900, categoryId: 'hot-drinks', art: { layers: [] } }, { auth: true })).status, 400);
+  const created = await call('POST', '/api/staff/items', {
+    name: 'Hot Latte', nameZh: '热拿铁', price: 900, categoryId: 'hot-drinks', art, options: ['sugar', 'bogus'],
+  }, { auth: true });
+  assert.equal(created.status, 201);
+  assert.equal(created.data.id, 'hot-latte');
+  assert.equal(created.data.number, 12, 'gets the next menu number');
+  assert.deepEqual(created.data.options, ['sugar'], 'hot drink without ice option');
+  assert.equal(created.data.art.evil, undefined, 'unknown art keys are dropped');
+  const dup = await call('POST', '/api/staff/items', { name: 'Hot Latte', price: 900, categoryId: 'hot-drinks', art }, { auth: true });
+  assert.equal(dup.data.id, 'hot-latte-2');
+  await call('DELETE', '/api/staff/items/hot-latte-2', null, { auth: true });
+
+  const menu = (await call('GET', '/api/menu')).data;
+  assert.ok(menu.categories.some((c) => c.id === 'hot-drinks'));
+  assert.ok(menu.items.some((i) => i.id === 'hot-latte'));
+  assert.ok(!menu.items.some((i) => i.id === 'hot-latte-2'));
+
+  // ice is not accepted for a drink that doesn't offer it; sugar is
+  const order = await call('POST', '/api/orders', { customerName: 'F', items: [{ itemId: 'hot-latte', qty: 2, options: { ice: 'none', sugar: 'less' } }] });
+  assert.equal(order.status, 201);
+  assert.equal(order.data.total, 1800);
+  assert.deepEqual(order.data.items[0].options.map((o) => o.group), ['sugar']);
+
+  // category with drinks can't be removed
+  assert.equal((await call('DELETE', '/api/staff/categories/hot-drinks', null, { auth: true })).status, 409);
+  const del = await call('DELETE', '/api/staff/items/hot-latte', null, { auth: true });
+  assert.equal(del.status, 200);
+  assert.equal((await call('POST', '/api/orders', { customerName: 'F', items: [{ itemId: 'hot-latte', qty: 1 }] })).status, 400);
+  // the past order keeps its line
+  const past = await call('GET', `/api/orders/${order.data.token}`);
+  assert.equal(past.data.items[0].name, 'Hot Latte');
+  assert.equal((await call('DELETE', '/api/staff/categories/hot-drinks', null, { auth: true })).status, 200);
+  assert.ok(!(await call('GET', '/api/menu')).data.categories.some((c) => c.id === 'hot-drinks'));
+  // edit art/options/number of an existing drink
+  const ed = await call('PATCH', '/api/staff/items/oat-iced-latte', { options: ['ice'], number: 20, art }, { auth: true });
+  assert.deepEqual(ed.data.options, ['ice']);
+  assert.equal(ed.data.number, 20);
+  await call('PATCH', '/api/staff/items/oat-iced-latte', { options: ['ice', 'sugar'], number: 11 }, { auth: true });
+});
+
 test('closing the store blocks QR orders but not walk-up orders', async () => {
   await call('PATCH', '/api/staff/settings', { open: false }, { auth: true });
   assert.equal((await call('POST', '/api/orders', { customerName: 'D', items: [{ itemId: 'oat-iced-latte', qty: 1 }] })).status, 409);

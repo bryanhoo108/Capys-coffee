@@ -232,6 +232,36 @@ export function createApp(store, { webDist, orderRateLimit = 40 } = {}) {
     res.json(item);
   });
 
+  api.post('/staff/items', (req, res) => {
+    const item = store.createItem(req.body || {});
+    broadcastMenu();
+    res.status(201).json(item);
+  });
+
+  api.delete('/staff/items/:id', (req, res) => {
+    store.deleteItem(req.params.id);
+    broadcastMenu();
+    res.json({ ok: true });
+  });
+
+  api.post('/staff/categories', (req, res) => {
+    const c = store.createCategory(req.body || {});
+    broadcastMenu();
+    res.status(201).json(c);
+  });
+
+  api.patch('/staff/categories/:id', (req, res) => {
+    store.updateCategory(req.params.id, req.body || {});
+    broadcastMenu();
+    res.json({ ok: true });
+  });
+
+  api.delete('/staff/categories/:id', (req, res) => {
+    store.deleteCategory(req.params.id);
+    broadcastMenu();
+    res.json({ ok: true });
+  });
+
   api.get('/staff/settings', (req, res) => res.json(store.publicSettings()));
   api.patch('/staff/settings', (req, res) => {
     const s = store.updateSettings(req.body || {});

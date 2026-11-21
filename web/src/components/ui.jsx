@@ -9,6 +9,7 @@ export function Logo({ size = 44, className = '' }) {
 /* ---------------- Sheet / dialog ---------------- */
 
 let openSheets = 0;
+const sheetStack = []; // only the top-most sheet reacts to Escape / Tab
 
 /**
  * Bottom sheet on phones, centred dialog on larger screens.
@@ -33,9 +34,12 @@ export function Sheet({ open, onClose, children, label, size = 'md', className =
   useEffect(() => {
     if (!render) return undefined;
     const prev = document.activeElement;
+    const token = {};
+    sheetStack.push(token);
     openSheets++;
     document.body.classList.add('no-scroll');
     const onKey = (e) => {
+      if (sheetStack[sheetStack.length - 1] !== token) return;
       if (e.key === 'Escape') { e.stopPropagation(); onClose?.(); }
       if (e.key === 'Tab' && panel.current) {
         const f = panel.current.querySelectorAll('button:not([disabled]), [href], input:not([disabled]), textarea, select, [tabindex]:not([tabindex="-1"])');
@@ -49,6 +53,7 @@ export function Sheet({ open, onClose, children, label, size = 'md', className =
     document.addEventListener('keydown', onKey);
     setTimeout(() => panel.current?.focus({ preventScroll: true }), 30);
     return () => {
+      sheetStack.splice(sheetStack.indexOf(token), 1);
       openSheets--;
       if (!openSheets) document.body.classList.remove('no-scroll');
       document.removeEventListener('keydown', onKey);

@@ -122,7 +122,7 @@ export default function Pos() {
       <section className="pos-menu">
         <div className="pos-cats" role="tablist">
           <button type="button" className={cat === 'all' ? 'is-active' : ''} onClick={() => setCat('all')}>All</button>
-          {menu.categories.map((c) => (
+          {menu.categories.filter((c) => menu.items.some((i) => i.categoryId === c.id)).map((c) => (
             <button key={c.id} type="button" className={cat === c.id ? 'is-active' : ''} onClick={() => setCat(c.id)}>{c.name}</button>
           ))}
         </div>
